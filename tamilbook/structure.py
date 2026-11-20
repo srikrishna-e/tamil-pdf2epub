@@ -61,6 +61,14 @@ def build_blocks(pages: list[Page], keep_lines: bool = False) -> list[Block]:
     gap = median(gaps) if gaps else body_size * 0.4
     lefts = [l.x0 for l in all_lines]
     left = sorted(lefts)[len(lefts) // 5]  # robust left margin
+    # Typical full line width. Headings are short and usually centred; a line
+    # that spans the text block is body text even if it looks "big" (OCR line
+    # height grows with quote marks and tall glyphs, so size alone misleads).
+    widths = sorted(l.x1 - l.x0 for l in all_lines if l.x1 > l.x0)
+    full_width = widths[int(len(widths) * 0.9)] if len(widths) >= 10 else None
+
+    def narrow(ln) -> bool:
+        return full_width is None or ln.x1 <= ln.x0 or (ln.x1 - ln.x0) < 0.75 * full_width
 
     blocks: list[Block] = []
     cur: Block | None = None
@@ -80,7 +88,7 @@ def build_blocks(pages: list[Page], keep_lines: bool = False) -> list[Block]:
             gap_before = prev is None or (ln.y0 - prev.y1) > gap * 1.8
             is_heading = short and (
                 (CHAPTER_RE.match(ln.text) and (big or gap_before or i == 0))
-                or (big and gap_before)
+                or (big and gap_before and narrow(ln))
             )
             if is_heading:
                 flush()

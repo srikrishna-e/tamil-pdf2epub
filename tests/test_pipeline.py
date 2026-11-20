@@ -93,3 +93,31 @@ def test_paragraph_continues_across_page_break():
 def test_categorize_religion():
     text = "இறைவன் அருள் கோயில் வழிபாடு பக்தி தேவாரம் " * 20
     assert categorize(text)["category"] == "religion"
+
+
+def test_normalize_fixes_prebase_vowel_in_visual_order():
+    # OCR output "தந்ைத" (ை typed before த) -> "தந்தை"
+    assert normalize("தந்ைத") == "தந்தை"
+    # ெ before க plus ா -> கொ
+    assert normalize("ெகா") == "கொ"
+    # valid text is left alone
+    for word in ("தந்தை", "கொண்டு", "பெயர்", "சேவை"):
+        assert normalize(word) == word
+
+
+def test_big_full_width_line_is_not_a_heading():
+    # OCR gives taller boxes to lines with quotes/tall glyphs; a big line that
+    # spans the text block is still body text.
+    pages = make_book(3, header=False)
+    body = pages[1].lines
+    body[5].y0 += 30
+    body[5].y1 += 40
+    body[5].size = 20
+    for ln in body[6:]:
+        ln.y0 += 40
+        ln.y1 += 40
+    # a short, centred, big line after a gap is a real heading
+    pages[2].lines.insert(0, Line("இரண்டாம் பகுதி", 30, 50, 150, 20, x1=270))
+    blocks = build_blocks(pages)
+    heads = [b.text for b in blocks if b.kind == "h"]
+    assert heads == ["இரண்டாம் பகுதி"]

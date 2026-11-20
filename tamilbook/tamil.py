@@ -19,11 +19,19 @@ TERMINAL_PUNCT = tuple(".?!:;\"'”’)]»|।")
 
 _INVISIBLE = dict.fromkeys(map(ord, "\u00ad\ufeff\u200b"), None)
 
+# A pre-base vowel sign (\u0bc6 \u0bc7 \u0bc8) typed in visual order, i.e. *before* its
+# consonant: "\u0ba4\u0ba8\u0bcd\u0bc8\u0ba4" (sign after a pulli) instead of "\u0ba4\u0ba8\u0bcd\u0ba4\u0bc8". Tesseract and
+# some legacy converters do this. Only swapped when the sign is not already
+# attached to a consonant, so valid text is never touched.
+_PREBASE_RE = re.compile(r"(?<![\u0b95-\u0bb9])([\u0bc6-\u0bc8])([\u0b95-\u0bb9])")
+
 
 def normalize(text: str) -> str:
     """NFC-normalise, drop soft hyphens / zero-width spaces, tidy whitespace."""
     text = unicodedata.normalize("NFC", text).translate(_INVISIBLE)
     text = text.replace("\u0bcd\u200c", "\u0bcd")  # Tesseract adds ZWNJ after pulli
+    text = _PREBASE_RE.sub(r"\2\1", text)
+    text = unicodedata.normalize("NFC", text)  # \u0bc6+\u0b95+\u0bbe -> \u0b95\u0bca after the swap
     return re.sub(r"[ \t\u00a0]+", " ", text).strip()
 
 
