@@ -121,3 +121,62 @@ def test_big_full_width_line_is_not_a_heading():
     blocks = build_blocks(pages)
     heads = [b.text for b in blocks if b.kind == "h"]
     assert heads == ["இரண்டாம் பகுதி"]
+
+
+def test_low_res_pass_recovers_missed_heading_and_chapter_number():
+    from tamilbook.extract import _merge_recovered
+    main = [Line("தாமரை மது", 190, 220, 265, 30, conf=61, x1=485),
+            Line(BODY, 268, 295, 73, 27, conf=88, x1=709),
+            Line(BODY, 400, 430, 73, 27, conf=88, x1=709)]
+    low = [Line("9. தாமரை மது", 188, 222, 240, 34, conf=80, x1=485),   # adds number
+           Line("18. தரிசனம்", 330, 360, 250, 30, conf=82, x1=480),    # missed line
+           Line("ஒரு வேறு வாசகம் இங்கே", 268, 295, 73, 27, conf=90, x1=709),  # body: ignored
+           Line("ட வ", 600, 620, 300, 20, conf=40, x1=330)]           # low conf: ignored
+    lines, fixed = _merge_recovered(main, low)
+    assert fixed == 2
+    assert [l.text for l in lines] == ["9. தாமரை மது", BODY, "18. தரிசனம்", BODY]
+
+
+def _ocr_book():
+    pages = make_book(6, header=False)
+    for p in pages:
+        p.source = "ocr"
+        for ln in p.lines:
+            ln.conf = 90
+    return pages
+
+
+def test_illustration_noise_removed_and_ledgered():
+    pages = _ocr_book()
+    pic = Page(7, 420, 595, [Line("(Nasal", 100, 140, 60, 40, conf=0, x1=120),
+                             Line("eit sip sip pit", 200, 220, 80, 20, conf=50, x1=300),
+                             Line("27. சுமை தாங்கி", 500, 515, 150, 15, conf=95, x1=270)],
+               "ocr")
+    pages.append(pic)
+    furn = find_furniture(pages)
+    noise = [r.text for r in furn.ledger if r.reason == "illustration-noise"]
+    assert noise == ["(Nasal", "eit sip sip pit"]
+    assert [l.text for l in pic.lines] == ["27. சுமை தாங்கி"]   # confident caption kept
+    # ordinary text pages are untouched even with low-confidence dialogue lines
+    pages[2].lines[3].conf = 10
+    assert all(r.page == 7 for r in furn.ledger if r.reason == "illustration-noise")
+
+
+def test_repeated_chapter_title_caption_removed():
+    pages = _ocr_book()
+    pages[0].lines.insert(0, Line("27. சுமை தாங்கி", 30, 50, 150, 20, conf=95, x1=270))
+    pages[3].lines.append(Line("27. சுமை தாங்கி", 575, 590, 150, 15, conf=95, x1=270))
+    pages[4].lines.insert(0, Line("28. சுமை தூக்கி", 30, 50, 150, 20, conf=95, x1=270))
+    furn = find_furniture(pages)
+    reps = [(r.page, r.text) for r in furn.ledger if r.reason == "repeated-chapter-title"]
+    assert reps == [(4, "27. சுமை தாங்கி")]     # the next chapter is kept
+
+
+def test_numbered_book_ignores_big_dialogue_lines():
+    pages = make_book(4, header=False)
+    for n, p in enumerate(pages, start=1):
+        p.lines.insert(0, Line(f"{n}, அத்தியாயத் தலைப்பு", 20, 40, 150, 14, x1=270))
+    d = pages[2].lines
+    d[5] = Line("“ஆம்.”", d[5].y0 + 30, d[5].y1 + 36, 50, 20, x1=110)
+    heads = [b.text for b in build_blocks(pages) if b.kind == "h"]
+    assert heads == [f"{n}, அத்தியாயத் தலைப்பு" for n in range(1, 5)]

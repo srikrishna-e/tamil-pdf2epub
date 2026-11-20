@@ -31,7 +31,8 @@ PAGE_NUM_RE = re.compile(
 class Removed:
     page: int
     text: str
-    reason: str          # "page-number" | "running-header" | "running-footer"
+    reason: str          # "page-number" | "running-header" | "running-footer" |
+                         # "illustration-noise" | "repeated-chapter-title"
     cluster: int | None = None
 
 
@@ -159,5 +160,61 @@ def find_furniture(pages: list[Page], min_repeat: int = 3, k: int = 2,
         ledger.extend(drop[i] for i in sorted(drop))
         page.lines = [ln for i, ln in enumerate(page.lines) if i not in drop]
 
+    ledger.extend(_strip_illustration_noise(pages))
+    ledger.extend(_strip_repeated_chapter_titles(pages))
+    ledger.sort(key=lambda r: r.page)
+
     book_headers = [texts[c] for c in sorted(book_level, key=lambda c: -len(members[c]))]
     return Furniture(ledger, book_headers, hints)
+
+
+def _strip_illustration_noise(pages: list[Page], noise_conf: float = 60) -> list[Removed]:
+    """Drop OCR garbage read out of pictures ("(Nasal", "eit sip sip").
+
+    Only on illustration pages - OCR pages with very few lines, or whose
+    typical line confidence is low. Short dialogue lines ("ஆம்.") also get
+    low confidence, so this is never applied to ordinary text pages. Lines
+    OCR is confident about (a caption) are kept.
+    """
+    counts = [len(p.lines) for p in pages if p.source == "ocr" and p.lines]
+    if not counts:
+        return []
+    typical = median(counts)
+    out: list[Removed] = []
+    for page in pages:
+        if page.source != "ocr" or not page.lines:
+            continue
+        confs = [ln.conf if ln.conf is not None else 100 for ln in page.lines]
+        if not (len(page.lines) < 0.4 * typical or median(confs) < noise_conf):
+            continue
+        keep = []
+        for ln, c in zip(page.lines, confs):
+            if c < noise_conf:
+                out.append(Removed(page.number, ln.text, "illustration-noise"))
+            else:
+                keep.append(ln)
+        page.lines = keep
+    return out
+
+
+def _title_part(text: str) -> str:
+    return re.sub(r"^[0-9௦-௯]{1,3}\s*[.,)]\s*", "", text).strip()
+
+
+def _strip_repeated_chapter_titles(pages: list[Page], fuzz: float = 0.9) -> list[Removed]:
+    """Drop a chapter title repeated later, e.g. as a caption under an
+    illustration ("27. சுமை தாங்கி" on the chapter page and again on a picture)."""
+    seen: list[str] = []
+    out: list[Removed] = []
+    for page in pages:
+        keep = []
+        for ln in page.lines:
+            title = _title_part(ln.text) if CHAPTER_RE.match(ln.text) else ""
+            if title and any(SequenceMatcher(None, title, s).ratio() >= fuzz for s in seen[-3:]):
+                out.append(Removed(page.number, ln.text, "repeated-chapter-title"))
+                continue
+            if title:
+                seen.append(title)
+            keep.append(ln)
+        page.lines = keep
+    return out

@@ -11,9 +11,11 @@ from .tamil import ends_sentence
 CHAPTER_RE = re.compile(
     r"^(அத்தியாயம்|அதிகாரம்|பாகம்|பகுதி|படலம்|காண்டம்|chapter|part)\b"
     r"|^(அத்தியாயம்|அதிகாரம்|பாகம்|பகுதி|படலம்|காண்டம்)"   # \b is unreliable after Tamil signs
-    r"|^[0-9௦-௯]{1,3}\s*[.)]\s*\S",
+    r"|^[0-9௦-௯]{1,3}\s*[.,)]\s*\S",   # OCR often reads "5." as "5,"
     re.IGNORECASE,
 )
+NUMBERED_RE = re.compile(r"^[0-9௦-௯]{1,3}\s*[.,)]")
+QUOTES = tuple("\"'“”‘’«»*")
 
 
 @dataclass
@@ -70,6 +72,14 @@ def build_blocks(pages: list[Page], keep_lines: bool = False) -> list[Block]:
     def narrow(ln) -> bool:
         return full_width is None or ln.x1 <= ln.x0 or (ln.x1 - ln.x0) < 0.75 * full_width
 
+    # When the book numbers its chapters ("1. ...", "அத்தியாயம் 2"), trust
+    # those and stop guessing headings from size after the first one: short
+    # dialogue lines ("“ஆம்.”") otherwise look like big, isolated headings.
+    numbered = sum(1 for l in all_lines
+                   if len(l.text) <= 60 and CHAPTER_RE.match(l.text)
+                   and (narrow(l) or not NUMBERED_RE.match(l.text))) >= 3
+    seen_numbered = False
+
     blocks: list[Block] = []
     cur: Block | None = None
 
@@ -86,10 +96,16 @@ def build_blocks(pages: list[Page], keep_lines: bool = False) -> list[Block]:
             big = ln.size >= body_size * 1.25
             short = len(ln.text) <= 60
             gap_before = prev is None or (ln.y0 - prev.y1) > gap * 1.8
-            is_heading = short and (
-                (CHAPTER_RE.match(ln.text) and (big or gap_before or i == 0))
-                or (big and gap_before and narrow(ln))
-            )
+            # a bare number ("918) எதுவோ...") needs the narrow-heading shape;
+            # a chapter word (அத்தியாயம், பாகம்) is explicit enough on its own
+            chapter_line = bool(short and CHAPTER_RE.match(ln.text)
+                                and (narrow(ln) or not NUMBERED_RE.match(ln.text))
+                                and (big or gap_before or i == 0))
+            size_heading = (short and big and gap_before and narrow(ln)
+                            and not ln.text.lstrip().startswith(QUOTES)
+                            and not (numbered and seen_numbered))
+            is_heading = chapter_line or size_heading
+            seen_numbered = seen_numbered or chapter_line
             if is_heading:
                 flush()
                 blocks.append(Block("h", ln.text, page.number, pages={page.number}))

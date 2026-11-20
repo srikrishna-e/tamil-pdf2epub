@@ -7,6 +7,7 @@ Two sources:
 from __future__ import annotations
 
 import io
+import re
 from dataclasses import dataclass, field
 
 import pymupdf
@@ -99,6 +100,43 @@ def _ocr_lines(page: pymupdf.Page, lang: str, dpi: int, low_conf: float) -> list
     return lines
 
 
+_NUM_PREFIX_RE = re.compile(r"^[0-9௦-௯]{1,3}\s*[.,)]\s*$")
+
+
+def _merge_recovered(main: list[Line], low: list[Line], min_conf: float = 75) -> tuple[list[Line], int]:
+    """Add lines that only the low-resolution pass read.
+
+    Tesseract at 300 dpi silently skips very heavy display type - typically
+    chapter headings ("18. தரிசனம்" vanishes entirely, "9. தாமரை மது" loses
+    its number) - while reading it fine from a smaller image. Body text is
+    always taken from the high-resolution pass; a low-resolution line is used
+    only where nothing was read at that height, or to restore a missing
+    chapter number in front of a line that was read.
+    """
+    out = list(main)
+    fixed = 0
+    for lo in low:
+        if lo.conf is None or lo.conf < min_conf or len(lo.text.strip()) < 3:
+            continue
+        hit = [m for m in main
+               if min(m.y1, lo.y1) - max(m.y0, lo.y0) > 0.3 * min(m.y1 - m.y0, lo.y1 - lo.y0)]
+        if not hit:
+            out.append(lo)
+            fixed += 1
+        elif len(hit) == 1 and lo.text.endswith(hit[0].text) \
+                and _NUM_PREFIX_RE.match(lo.text[: -len(hit[0].text)]):
+            m = hit[0]
+            m.text, m.x0 = lo.text, min(m.x0, lo.x0)
+            fixed += 1
+    out.sort(key=lambda l: (round(l.y0), l.x0))
+    return out, fixed
+
+
+def _recover_missed_lines(page: pymupdf.Page, main: list[Line], lang: str,
+                          low_conf: float, dpi: int = 100) -> tuple[list[Line], int]:
+    return _merge_recovered(main, _ocr_lines(page, lang, dpi, low_conf))
+
+
 def extract(pdf_path: str, mode: str = "auto", lang: str = "tam+eng",
             dpi: int = 300, pages: str | None = None, low_conf: float = 60,
             broken_threshold: float = 0.03,
@@ -127,6 +165,10 @@ def extract(pdf_path: str, mode: str = "auto", lang: str = "tam+eng",
         if mode == "ocr" or (mode == "auto" and not lines):
             lines = _ocr_lines(pg, lang, dpi, low_conf)
             source = "ocr"
+            lines, fixed = _recover_missed_lines(pg, lines, lang, low_conf)
+            if fixed:
+                note = (note + "; " if note else "") + \
+                    f"{fixed} line(s) recovered by a low-resolution OCR pass"
         if not lines:
             source = "empty"
         result.append(Page(i + 1, w, h, lines, source, note))
